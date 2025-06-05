@@ -15,6 +15,7 @@ app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 
 @app.route('/')
 def index():
+    return "RecMeet backend is running."
 
 @app.route('/upload', methods=['POST'])
 def upload():
