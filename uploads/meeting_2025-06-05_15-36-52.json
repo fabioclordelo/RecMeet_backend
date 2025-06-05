@@ -1,0 +1,5 @@
+{
+  "languages": "pt",
+  "transcript": "Fazemos o novo teste agora com a funcionalidade de fazer o download do áudio e tentar novamente caso o upload falhe. Vamos ver como está funcionando.",
+  "summary": "**Resumo**\nA reunião focou em testar uma nova funcionalidade relacionada ao download de áudio e na resolução de problemas em caso de falhas no processo de upload.\n\n**Tópicos Principais**\n1. Teste de nova funcionalidade: Discussão sobre a realização de testes com a nova funcionalidade de download de áudio.\n2. Solução de problemas: Abordagem para tentar novamente caso ocorra falha no upload.\n\n**Decisões Tomadas**\nNão foram tomadas decisões específicas durante a reunião.\n\n**Tarefas**\nRealizar testes na nova funcionalidade de download – Não especificado\n\n**Próximos Passos**\nEspera-se que sejam realizados testes adicionais para garantir que a funcionalidade de download e a gestão de falhas no upload estejam funcionando corretamente."
+}

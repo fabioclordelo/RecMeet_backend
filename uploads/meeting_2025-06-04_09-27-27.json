@@ -1,0 +1,5 @@
+{
+  "languages": "pt",
+  "transcript": " Bom, agora eu vou tentar novamente em outro idioma.  Em teoria esse aplicativo que eu fiz, deve detectar o idioma e fazer a transcrição  no idioma que está sendo falado.  Vamos ver se está funcionando.",
+  "summary": "The meeting is conducted in Portuguese.\n\n---\n\nSummary  \nThe meeting centered around testing a multilingual application developed to detect and transcribe spoken languages. The session involved verifying the app's functionality and its ability to accurately recognize and transcribe in the language being spoken.\n\nKey Topics  \nTopic 1: Application functionality - The focus was on testing whether the app correctly detects and transcribes languages.  \nTopic 2: Testing process - An explanation of attempting to test the application in a different language to evaluate its capabilities.\n\nDecisions Made  \nNo decisions were formally made during the meeting.\n\nAction Items  \nTest the application in different languages – Developer/Tester\n\nNext Steps  \nContinue testing with additional languages to ensure the application's reliability and accuracy in language detection and transcription."
+}

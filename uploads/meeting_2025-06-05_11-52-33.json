@@ -1,0 +1,5 @@
+{
+  "languages": "en",
+  "transcript": "",
+  "summary": "**Transcript**\n\n\"Dashing days again, the last time I tried it was not producing the transcript as a separate view, so there's something going on. It's weird because yesterday it was working.\"\n\n**Summary**\nThe meeting focused on troubleshooting a technical issue related to a feature that previously functioned correctly but is currently malfunctioning.\n\n**Key Topics**\n1. Technical Issue with Feature: The discussion centered on the problem of a feature that used to work (producing the transcript as a separate view) but is no longer doing so.\n2. Inconsistency in Functionality: It was noted that the feature was working correctly yesterday, suggesting an inconsistency or recent change.\n\n**Decisions Made**\nNone were explicitly mentioned in the provided transcript.\n\n**Action Items**\nInvestigate the technical issue with the feature – Owner not specified.\n\n**Next Steps**\nDetermine the cause of the inconsistency and resolve the issue, so the feature functions as intended."
+}
