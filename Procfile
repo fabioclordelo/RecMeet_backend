@@ -1,1 +1,1 @@
-web: gunicorn app:appweb: gunicorn app:app --timeout 120
+web: gunicorn app:appweb: gunicorn app:app
