@@ -36,7 +36,14 @@ def upload():
         # Save audio temporarily
         unique_name = f"{uuid.uuid4()}.wav"
         local_path = os.path.join(UPLOAD_FOLDER, unique_name)
-        file.save(local_path)
+        # Save audio file in chunks (streaming) to avoid memory overload
+        with open(local_path, "wb") as f:
+            while True:
+                chunk = file.stream.read(8192)
+                if not chunk:
+                    break
+                f.write(chunk)
+
         print(f"📥 Received file: {file.filename} → {local_path}")
 
         # Transcribe and summarize
