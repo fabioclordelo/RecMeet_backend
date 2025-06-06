@@ -62,5 +62,33 @@ def upload():
         print(f"❌ Error during upload processing: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/list', methods=['GET'])
+def list_meetings():
+    meetings = []
+
+    for filename in os.listdir(UPLOAD_FOLDER):
+        if filename.endswith(".json") and filename.startswith("meeting_"):
+            filepath = os.path.join(UPLOAD_FOLDER, filename)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = json.load(f)
+                    transcript = content.get("transcript", "")
+                    summary = content.get("summary", "")
+                    timestamp_str = filename.replace("meeting_", "").replace(".json", "")
+                    dt = datetime.strptime(timestamp_str, "%Y-%m-%d_%H-%M-%S")
+                    display_name = dt.strftime("%m/%d/%Y (%H:%M:%S)") + " Meeting"
+                    meetings.append({
+                        "filename": filename,
+                        "displayName": display_name,
+                        "transcript": transcript,
+                        "summary": summary
+                    })
+            except Exception as e:
+                print(f"Error reading {filename}: {e}")
+
+    # sort by datetime descending
+    meetings.sort(key=lambda x: x["displayName"], reverse=True)
+    return jsonify(meetings)
+
 if __name__ == '__main__':
     pass  # Required for gunicorn
