@@ -1,6 +1,6 @@
 from faster_whisper import WhisperModel
 
-model = WhisperModel("base")
+model = WhisperModel("base", local_files_only=False)
 
 def transcribe_audio(path):
     segments, info = model.transcribe(path, beam_size=5)
