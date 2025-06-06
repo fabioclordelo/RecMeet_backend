@@ -18,4 +18,4 @@ ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
 RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('base', local_files_only=False)"
 
 # Run with Gunicorn
-CMD ["gunicorn", "-b", "0.0.0.0:8080", "app:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:8080", "--timeout", "600", "app:app"]
