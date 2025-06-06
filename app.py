@@ -37,14 +37,7 @@ def upload():
         # Save audio as .m4a instead of .wav (requires ffmpeg for processing)
         unique_name = f"{uuid.uuid4()}.m4a"
         local_path = os.path.join(UPLOAD_FOLDER, unique_name)
-        # Save audio file in chunks (streaming) to avoid memory overload
-        with open(local_path, "wb") as f:
-            while True:
-                chunk = file.stream.read(8192)
-                if not chunk:
-                    break
-                f.write(chunk)
-
+        file.save(local_path)
         print(f"📥 Received file: {file.filename} → {local_path}")
 
         # Transcribe and summarize
