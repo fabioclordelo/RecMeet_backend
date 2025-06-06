@@ -7,6 +7,7 @@ import json
 import time
 from datetime import datetime
 import uuid
+from threading import Thread
 
 app = Flask(__name__)
 UPLOAD_FOLDER = "uploads"
@@ -14,8 +15,6 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # Load GCS bucket name
 GCS_BUCKET = os.getenv("GCS_BUCKET")
-
-# Init storage client
 storage_client = storage.Client()
 
 # Increase max request size to 100MB
@@ -25,22 +24,9 @@ app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 def index():
     return "✅ RecMeet backend is running."
 
-@app.route('/upload', methods=['POST'])
-def upload():
-    start = time.time()
+def async_process_audio(filepath, blob_path):
     try:
-        file = request.files.get('audio')
-        if not file:
-            return jsonify({"error": "Missing 'audio' file in request"}), 400
-
-        # Save audio temporarily
-        unique_name = f"{uuid.uuid4()}.m4a"
-        local_path = os.path.join(UPLOAD_FOLDER, unique_name)
-        file.save(local_path)
-        print(f"📥 Received file: {file.filename} → {local_path}")
-
-        # Transcribe and summarize
-        raw_transcript, detected_langs = transcribe_audio(local_path)
+        raw_transcript, detected_langs = transcribe_audio(filepath)
         cleaned_transcript, summary = summarize_transcript(raw_transcript, detected_langs)
 
         result = {
@@ -49,10 +35,6 @@ def upload():
             "summary": summary
         }
 
-        # Save to GCS
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        json_filename = f"meeting_{timestamp}.json"
-        blob_path = f"meetings/{json_filename}"
         bucket = storage_client.bucket(GCS_BUCKET)
         blob = bucket.blob(blob_path)
         blob.upload_from_string(
@@ -60,14 +42,48 @@ def upload():
             content_type='application/json'
         )
 
-        print(f"✅ Uploaded to GCS: {blob_path}")
-        duration = time.time() - start
-        print(f"✅ Process completed in {duration:.2f} seconds")
-
-        return jsonify(result)
+        print(f"✅ Background processing done → {blob_path}")
 
     except Exception as e:
-        print(f"❌ Error during upload processing: {e}")
+        print(f"❌ Error in async processing: {e}")
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    try:
+        file = request.files.get('audio')
+        if not file:
+            return jsonify({"error": "Missing 'audio' file in request"}), 400
+
+        unique_id = uuid.uuid4().hex
+        audio_filename = f"{unique_id}.m4a"
+        local_path = os.path.join(UPLOAD_FOLDER, audio_filename)
+        file.save(local_path)
+
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        json_filename = f"meeting_{timestamp}.json"
+        blob_path = f"meetings/{json_filename}"
+
+        thread = Thread(target=async_process_audio, args=(local_path, blob_path))
+        thread.start()
+
+        return jsonify({
+            "status": "accepted",
+            "message": "Audio received and processing started.",
+            "filename": json_filename
+        }), 202
+
+    except Exception as e:
+        print(f"❌ Upload error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/status/<filename>', methods=['GET'])
+def check_status(filename):
+    try:
+        blob = storage_client.bucket(GCS_BUCKET).blob(f"meetings/{filename}")
+        if blob.exists():
+            return jsonify({"status": "complete"}), 200
+        return jsonify({"status": "processing"}), 202
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/list', methods=['GET'])
@@ -85,7 +101,6 @@ def list_meetings():
                 summary = data.get("summary", "")
                 filename = os.path.basename(blob.name)
 
-                # Ensure filename has expected pattern
                 if filename.startswith("meeting_") and filename.endswith(".json"):
                     timestamp_str = filename[len("meeting_"):-len(".json")]
                     try:
@@ -98,15 +113,15 @@ def list_meetings():
                             "summary": summary
                         })
                     except Exception as e:
-                        print(f"⚠️ Could not parse timestamp in {filename}: {e}")
+                        print(f"⚠️ Timestamp parse error in {filename}: {e}")
                 else:
-                    print(f"⚠️ Skipped non-standard filename: {blob.name}")
+                    print(f"⚠️ Skipped invalid filename: {blob.name}")
 
         meetings.sort(key=lambda x: x["displayName"], reverse=True)
         return jsonify(meetings)
 
     except Exception as e:
-        print(f"❌ Error during listing: {e}")
+        print(f"❌ List error: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
