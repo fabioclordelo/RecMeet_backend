@@ -54,21 +54,23 @@ def upload():
         if not file:
             return jsonify({"error": "Missing 'audio' file in request"}), 400
 
+        # Save audio file locally
         unique_id = uuid.uuid4().hex
         audio_filename = f"{unique_id}.m4a"
         local_path = os.path.join(UPLOAD_FOLDER, audio_filename)
         file.save(local_path)
 
+        # Prepare destination filename for JSON
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         json_filename = f"meeting_{timestamp}.json"
         blob_path = f"meetings/{json_filename}"
 
+        # Launch background thread for processing
         thread = Thread(target=async_process_audio, args=(local_path, blob_path))
         thread.start()
 
         return jsonify({
-            "status": "accepted",
-            "message": "Audio received and processing started.",
+            "status": "processing",
             "filename": json_filename
         }), 202
 
@@ -125,4 +127,4 @@ def list_meetings():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    pass  # Used by gunicorn
+    pass  # Used by gunicorn in Cloud Run
