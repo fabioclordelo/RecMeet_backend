@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from utils.transcriber import transcribe_audio
 from utils.summarizer import summarize_transcript
-from google.cloud import storage
+from google.cloud import storage, tasks_v2
 import os
 import json
 import time
@@ -12,13 +12,17 @@ app = Flask(__name__)
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Load GCS bucket name
+# Load required env vars
 GCS_BUCKET = os.getenv("GCS_BUCKET")
+GCP_PROJECT = os.getenv("GCP_PROJECT")
+TASK_QUEUE = os.getenv("TASK_QUEUE")
+TASK_LOCATION = os.getenv("TASK_LOCATION")
+PROCESS_URL = os.getenv("PROCESS_URL")  # e.g. https://your-cloud-run-url/process
 
-# Init storage client
+# Init GCS client
 storage_client = storage.Client()
 
-# Increase max request size to 100MB
+# Increase file size limit (100 MB)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 
 @app.route('/')
@@ -27,7 +31,6 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    start = time.time()
     try:
         file = request.files.get('audio')
         if not file:
@@ -39,7 +42,42 @@ def upload():
         file.save(local_path)
         print(f"📥 Received file: {file.filename} → {local_path}")
 
-        # Transcribe and summarize
+        # Create and send Cloud Task
+        client = tasks_v2.CloudTasksClient()
+        parent = client.queue_path(GCP_PROJECT, TASK_LOCATION, TASK_QUEUE)
+
+        payload = {
+            "local_path": local_path,
+            "original_filename": file.filename
+        }
+
+        task = {
+            "http_request": {
+                "http_method": tasks_v2.HttpMethod.POST,
+                "url": PROCESS_URL,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps(payload).encode()
+            }
+        }
+
+        response = client.create_task(parent=parent, task=task)
+        print(f"🚀 Cloud Task enqueued: {response.name}")
+        return jsonify({"status": "processing", "task": response.name}), 202
+
+    except Exception as e:
+        print(f"❌ Error during /upload: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/process', methods=['POST'])
+def process():
+    try:
+        data = request.get_json()
+        local_path = data.get("local_path")
+        original_filename = data.get("original_filename", "uploaded.m4a")
+        print(f"⚙️ Processing task for file: {original_filename} at {local_path}")
+
+        start = time.time()
+
         raw_transcript, detected_langs = transcribe_audio(local_path)
         cleaned_transcript, summary = summarize_transcript(raw_transcript, detected_langs)
 
@@ -49,10 +87,10 @@ def upload():
             "summary": summary
         }
 
-        # Save to GCS
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         json_filename = f"meeting_{timestamp}.json"
         blob_path = f"meetings/{json_filename}"
+
         bucket = storage_client.bucket(GCS_BUCKET)
         blob = bucket.blob(blob_path)
         blob.upload_from_string(
@@ -61,13 +99,11 @@ def upload():
         )
 
         print(f"✅ Uploaded to GCS: {blob_path}")
-        duration = time.time() - start
-        print(f"✅ Process completed in {duration:.2f} seconds")
-
-        return jsonify(result)
+        print(f"✅ Task processed in {time.time() - start:.2f} seconds")
+        return jsonify({"status": "done", "filename": json_filename}), 200
 
     except Exception as e:
-        print(f"❌ Error during upload processing: {e}")
+        print(f"❌ Error during /process: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/list', methods=['GET'])
@@ -85,7 +121,6 @@ def list_meetings():
                 summary = data.get("summary", "")
                 filename = os.path.basename(blob.name)
 
-                # Ensure filename has expected pattern
                 if filename.startswith("meeting_") and filename.endswith(".json"):
                     timestamp_str = filename[len("meeting_"):-len(".json")]
                     try:
