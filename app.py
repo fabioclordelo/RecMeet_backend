@@ -2,6 +2,8 @@ from flask import Flask, request, jsonify
 from utils.transcriber import transcribe_audio
 from utils.summarizer import summarize_transcript
 from google.cloud import storage, tasks_v2
+import firebase_admin
+from firebase_admin import credentials, messaging
 import os
 import json
 import time
@@ -12,18 +14,28 @@ app = Flask(__name__)
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Load required env vars
+# Load environment variables
 GCS_BUCKET = os.getenv("GCS_BUCKET")
 GCP_PROJECT = os.getenv("GCP_PROJECT")
 TASK_QUEUE = os.getenv("TASK_QUEUE")
 TASK_LOCATION = os.getenv("TASK_LOCATION")
-PROCESS_URL = os.getenv("PROCESS_URL")  # e.g. https://your-cloud-run-url/process
+PROCESS_URL = os.getenv("PROCESS_URL")  # e.g., https://.../process
+FIREBASE_CREDENTIAL_JSON = os.getenv("FIREBASE_CREDENTIAL_JSON")  # Full JSON string or file path
 
-# Init GCS client
+# Initialize GCS and FCM
 storage_client = storage.Client()
+DEVICE_TOKENS = set()
 
-# Increase file size limit (100 MB)
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
+if not firebase_admin._apps:
+    try:
+        if os.path.isfile(FIREBASE_CREDENTIAL_JSON):
+            cred = credentials.Certificate(FIREBASE_CREDENTIAL_JSON)
+        else:
+            cred = credentials.Certificate(json.loads(FIREBASE_CREDENTIAL_JSON))
+        firebase_admin.initialize_app(cred)
+        print("✅ Firebase initialized")
+    except Exception as e:
+        print("❌ Failed to initialize Firebase Admin SDK:", e)
 
 @app.route('/')
 def index():
@@ -36,13 +48,11 @@ def upload():
         if not file:
             return jsonify({"error": "Missing 'audio' file in request"}), 400
 
-        # Save audio temporarily
         unique_name = f"{uuid.uuid4()}.m4a"
         local_path = os.path.join(UPLOAD_FOLDER, unique_name)
         file.save(local_path)
         print(f"📥 Received file: {file.filename} → {local_path}")
 
-        # Create and send Cloud Task
         client = tasks_v2.CloudTasksClient()
         parent = client.queue_path(GCP_PROJECT, TASK_LOCATION, TASK_QUEUE)
 
@@ -68,13 +78,38 @@ def upload():
         print(f"❌ Error during /upload: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/register_token', methods=['POST'])
+def register_token():
+    try:
+        data = request.get_json()
+        token = data.get("token")
+        if token:
+            DEVICE_TOKENS.add(token)
+            print(f"✅ Registered FCM token: {token}")
+            return jsonify({"status": "registered"}), 200
+        return jsonify({"error": "No token provided"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+def notify_clients(filename):
+    for token in DEVICE_TOKENS:
+        try:
+            message = messaging.Message(
+                data={"filename": filename},
+                token=token
+            )
+            response = messaging.send(message)
+            print(f"🔔 FCM sent to {token}: {response}")
+        except Exception as e:
+            print(f"⚠️ Failed to send FCM to {token}: {e}")
+
 @app.route('/process', methods=['POST'])
 def process():
     try:
         data = request.get_json()
         local_path = data.get("local_path")
         original_filename = data.get("original_filename", "uploaded.m4a")
-        print(f"⚙️ Processing task for file: {original_filename} at {local_path}")
+        print(f"⚙️ Processing file: {original_filename} at {local_path}")
 
         start = time.time()
 
@@ -99,7 +134,9 @@ def process():
         )
 
         print(f"✅ Uploaded to GCS: {blob_path}")
+        notify_clients(json_filename)
         print(f"✅ Task processed in {time.time() - start:.2f} seconds")
+
         return jsonify({"status": "done", "filename": json_filename}), 200
 
     except Exception as e:
@@ -134,14 +171,37 @@ def list_meetings():
                         })
                     except Exception as e:
                         print(f"⚠️ Could not parse timestamp in {filename}: {e}")
-                else:
-                    print(f"⚠️ Skipped non-standard filename: {blob.name}")
 
         meetings.sort(key=lambda x: x["displayName"], reverse=True)
         return jsonify(meetings)
 
     except Exception as e:
         print(f"❌ Error during listing: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/status/<filename>', methods=['GET'])
+def get_meeting(filename):
+    try:
+        bucket = storage_client.bucket(GCS_BUCKET)
+        blob = bucket.blob(f"meetings/{filename}")
+        if not blob.exists():
+            return jsonify({"error": "File not found"}), 404
+
+        content = blob.download_as_text()
+        data = json.loads(content)
+
+        timestamp_str = filename[len("meeting_"):-len(".json")]
+        dt = datetime.strptime(timestamp_str, "%Y-%m-%d_%H-%M-%S")
+        display_name = dt.strftime("%m/%d/%Y (%H:%M:%S)") + " Meeting"
+
+        return jsonify({
+            "filename": filename,
+            "displayName": display_name,
+            "transcript": data.get("transcript", ""),
+            "summary": data.get("summary", "")
+        })
+
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
