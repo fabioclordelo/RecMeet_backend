@@ -141,6 +141,17 @@ def process():
         )
 
         print(f"✅ Uploaded to GCS: {blob_path}")
+
+        # 🔄 Wait for blob to be available before notifying
+        for attempt in range(5):
+            if blob.exists():
+                print("🟢 Verified blob exists in GCS.")
+                break
+            print(f"⏳ Attempt {attempt+1}/5: Waiting for blob to be available...")
+            time.sleep(0.5)
+        else:
+            print("⚠️ Blob not confirmed in time — continuing anyway.")
+
         notify_clients(json_filename)
         print(f"✅ Task processed in {time.time() - start:.2f} seconds")
 
@@ -149,6 +160,7 @@ def process():
     except Exception as e:
         print(f"❌ Error during /process: {e}")
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/list', methods=['GET'])
 def list_meetings():
