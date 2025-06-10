@@ -95,13 +95,20 @@ def notify_clients(filename):
     for token in DEVICE_TOKENS:
         try:
             message = messaging.Message(
-                data={"filename": filename},
+                notification=messaging.Notification(
+                    title="RecMeet Update",
+                    body="Your transcript is ready!"
+                ),
+                data={
+                    "filename": filename
+                },
                 token=token
             )
             response = messaging.send(message)
             print(f"🔔 FCM sent to {token}: {response}")
         except Exception as e:
             print(f"⚠️ Failed to send FCM to {token}: {e}")
+
 
 @app.route('/process', methods=['POST'])
 def process():
