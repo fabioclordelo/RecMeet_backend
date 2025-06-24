@@ -95,10 +95,6 @@ def notify_clients(filename):
     for token in DEVICE_TOKENS:
         try:
             message = messaging.Message(
-                notification=messaging.Notification(
-                    title="RecMeet Update",
-                    body="Your transcript is ready!"
-                ),
                 data={
                     "filename": filename
                 },
