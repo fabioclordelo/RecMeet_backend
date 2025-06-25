@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from utils.transcriber import transcribe_audio
 from utils.summarizer import summarize_transcript
-from google.cloud import storage, tasks_v2
+from google.cloud import storage, tasks_v2, firestore
 import firebase_admin
 from firebase_admin import credentials, messaging
 import os
@@ -19,23 +19,15 @@ GCS_BUCKET = os.getenv("GCS_BUCKET")
 GCP_PROJECT = os.getenv("GCP_PROJECT")
 TASK_QUEUE = os.getenv("TASK_QUEUE")
 TASK_LOCATION = os.getenv("TASK_LOCATION")
-PROCESS_URL = os.getenv("PROCESS_URL")  # e.g., https://.../process
-FIREBASE_CREDENTIAL_JSON = os.getenv("FIREBASE_CREDENTIAL_JSON")  # Full JSON string or file path
+PROCESS_URL = os.getenv("PROCESS_URL")
+FIREBASE_CREDENTIAL_JSON = os.getenv("FIREBASE_CREDENTIAL_JSON")
 
-# Initialize GCS and Firebase
+# Initialize GCS and Firestore
 storage_client = storage.Client()
-FCM_TOKEN_FILE = "fcm_tokens.json"
+firestore_client = firestore.Client()
+TOKENS_COLLECTION = "fcm_tokens"
 
-def load_tokens():
-    if os.path.exists(FCM_TOKEN_FILE):
-        with open(FCM_TOKEN_FILE, "r") as f:
-            return set(json.load(f))
-    return set()
-
-def save_tokens(tokens):
-    with open(FCM_TOKEN_FILE, "w") as f:
-        json.dump(list(tokens), f)
-
+# Initialize Firebase Admin SDK
 if not firebase_admin._apps:
     try:
         if os.path.isfile(FIREBASE_CREDENTIAL_JSON):
@@ -93,38 +85,46 @@ def register_token():
     try:
         data = request.get_json()
         token = data.get("token")
-        if token:
-            tokens = load_tokens()
-            tokens.add(token)
-            save_tokens(tokens)
-            print(f"✅ Registered FCM token: {token}")
-            return jsonify({"status": "registered"}), 200
-        return jsonify({"error": "No token provided"}), 400
+        if not token:
+            return jsonify({"error": "No token provided"}), 400
+
+        doc_ref = firestore_client.collection(TOKENS_COLLECTION).document(token)
+        doc_ref.set({"timestamp": firestore.SERVER_TIMESTAMP})
+        print(f"✅ Registered FCM token in Firestore: {token}")
+
+        return jsonify({"status": "registered"}), 200
+
     except Exception as e:
+        print(f"❌ Error registering FCM token: {e}")
         return jsonify({"error": str(e)}), 500
 
 def notify_clients(filename):
-    tokens = load_tokens()
-    if not tokens:
-        print("⚠️ No FCM tokens registered. Skipping notification.")
-        return
+    try:
+        tokens_ref = firestore_client.collection(TOKENS_COLLECTION)
+        docs = tokens_ref.stream()
+        tokens = [doc.id for doc in docs]
 
-    for token in tokens:
-        try:
-            message = messaging.Message(
-                notification=messaging.Notification(
-                    title="RecMeet Update",
-                    body="Your transcript is ready!"
-                ),
-                data={
-                    "filename": filename
-                },
-                token=token
-            )
-            response = messaging.send(message)
-            print(f"🔔 FCM sent to {token}: {response}")
-        except Exception as e:
-            print(f"⚠️ Failed to send FCM to {token}: {e}")
+        if not tokens:
+            print("⚠️ No FCM tokens in Firestore. Skipping notifications.")
+            return
+
+        for token in tokens:
+            try:
+                message = messaging.Message(
+                    notification=messaging.Notification(
+                        title="RecMeet Update",
+                        body="Your transcript is ready!"
+                    ),
+                    data={"filename": filename},
+                    token=token
+                )
+                response = messaging.send(message)
+                print(f"🔔 FCM sent to {token}: {response}")
+            except Exception as e:
+                print(f"⚠️ Failed to send FCM to {token}: {e}")
+
+    except Exception as e:
+        print(f"❌ Failed to notify clients: {e}")
 
 @app.route('/process', methods=['POST'])
 def process():
