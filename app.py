@@ -22,9 +22,19 @@ TASK_LOCATION = os.getenv("TASK_LOCATION")
 PROCESS_URL = os.getenv("PROCESS_URL")  # e.g., https://.../process
 FIREBASE_CREDENTIAL_JSON = os.getenv("FIREBASE_CREDENTIAL_JSON")  # Full JSON string or file path
 
-# Initialize GCS and FCM
+# Initialize GCS and Firebase
 storage_client = storage.Client()
-DEVICE_TOKENS = set()
+FCM_TOKEN_FILE = "fcm_tokens.json"
+
+def load_tokens():
+    if os.path.exists(FCM_TOKEN_FILE):
+        with open(FCM_TOKEN_FILE, "r") as f:
+            return set(json.load(f))
+    return set()
+
+def save_tokens(tokens):
+    with open(FCM_TOKEN_FILE, "w") as f:
+        json.dump(list(tokens), f)
 
 if not firebase_admin._apps:
     try:
@@ -84,7 +94,9 @@ def register_token():
         data = request.get_json()
         token = data.get("token")
         if token:
-            DEVICE_TOKENS.add(token)
+            tokens = load_tokens()
+            tokens.add(token)
+            save_tokens(tokens)
             print(f"✅ Registered FCM token: {token}")
             return jsonify({"status": "registered"}), 200
         return jsonify({"error": "No token provided"}), 400
@@ -92,7 +104,12 @@ def register_token():
         return jsonify({"error": str(e)}), 500
 
 def notify_clients(filename):
-    for token in DEVICE_TOKENS:
+    tokens = load_tokens()
+    if not tokens:
+        print("⚠️ No FCM tokens registered. Skipping notification.")
+        return
+
+    for token in tokens:
         try:
             message = messaging.Message(
                 notification=messaging.Notification(
@@ -108,7 +125,6 @@ def notify_clients(filename):
             print(f"🔔 FCM sent to {token}: {response}")
         except Exception as e:
             print(f"⚠️ Failed to send FCM to {token}: {e}")
-
 
 @app.route('/process', methods=['POST'])
 def process():
@@ -142,7 +158,6 @@ def process():
 
         print(f"✅ Uploaded to GCS: {blob_path}")
 
-        # 🔄 Wait for blob to be available before notifying
         for attempt in range(5):
             if blob.exists():
                 print("🟢 Verified blob exists in GCS.")
@@ -160,7 +175,6 @@ def process():
     except Exception as e:
         print(f"❌ Error during /process: {e}")
         return jsonify({"error": str(e)}), 500
-
 
 @app.route('/list', methods=['GET'])
 def list_meetings():
