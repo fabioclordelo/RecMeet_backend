@@ -113,7 +113,7 @@ def notify_clients(filename):
                 message = messaging.Message(
                     notification=messaging.Notification(
                         title="RecMeet Update",
-                        body="Your transcript is ready!"
+                        body=f"Your transcript is ready! {uuid.uuid4().hex[:6]}"
                     ),
                     data={"filename": filename},
                     token=token
