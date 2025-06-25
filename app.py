@@ -237,5 +237,30 @@ def get_meeting(filename):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/debug_notify', methods=['POST'])
+def debug_notify():
+    from firebase_admin import messaging
+    try:
+        data = request.get_json()
+        token = data.get("token")
+        if not token:
+            return jsonify({"error": "Missing token"}), 400
+
+        message = messaging.Message(
+            notification=messaging.Notification(
+                title="Debug Notification",
+                body="This is a test push from RecMeet backend."
+            ),
+            data={"filename": "debug.json"},
+            token=token
+        )
+        response = messaging.send(message)
+        print(f"🔔 Debug notification sent to {token}: {response}")
+        return jsonify({"status": "sent", "response": response}), 200
+
+    except Exception as e:
+        print(f"❌ Error sending debug FCM: {e}")
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
     pass  # Used by gunicorn
