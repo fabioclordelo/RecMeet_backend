@@ -1,9 +1,9 @@
 from flask import Flask, request, jsonify
 from utils.transcriber import transcribe_audio
 from utils.summarizer import summarize_transcript
-from google.cloud import storage, tasks_v2, firestore
+from google.cloud import storage, tasks_v2
 import firebase_admin
-from firebase_admin import credentials, messaging
+from firebase_admin import credentials, messaging, firestore
 import os
 import json
 import time
@@ -24,7 +24,7 @@ FIREBASE_CREDENTIAL_JSON = os.getenv("FIREBASE_CREDENTIAL_JSON")
 
 # Initialize GCS and Firestore
 storage_client = storage.Client()
-firestore_client = firestore.Client()
+firestore_client = firestore.client()
 TOKENS_COLLECTION = "fcm_tokens"
 
 # Initialize Firebase Admin SDK
