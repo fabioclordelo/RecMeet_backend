@@ -53,7 +53,7 @@ def upload():
         unique_name = f"{uuid.uuid4()}.m4a"
         local_path = os.path.join(UPLOAD_FOLDER, unique_name)
         file.save(local_path)
-        print(f"📥 Received file: {file.filename} → {local_path}")
+        print(f"📥 Received file: {file.filename} → {local_path}", flush=True)
 
         client = tasks_v2.CloudTasksClient()
         parent = client.queue_path(GCP_PROJECT, TASK_LOCATION, TASK_QUEUE)
@@ -73,7 +73,7 @@ def upload():
         }
 
         response = client.create_task(parent=parent, task=task)
-        print(f"🚀 Cloud Task enqueued: {response.name}")
+        print(f"🚀 Cloud Task enqueued: {response.name}", flush=True)
         return jsonify({"status": "processing", "task": response.name}), 202
 
     except Exception as e:
@@ -132,7 +132,7 @@ def process():
         data = request.get_json()
         local_path = data.get("local_path")
         original_filename = data.get("original_filename", "uploaded.m4a")
-        print(f"⚙️ Processing file: {original_filename} at {local_path}")
+        print(f"⚙️ Processing file: {original_filename} at {local_path}", flush=True)
 
         start = time.time()
 
@@ -156,7 +156,7 @@ def process():
             content_type='application/json'
         )
 
-        print(f"✅ Uploaded to GCS: {blob_path}")
+        print(f"✅ Uploaded to GCS: {blob_path}", flush=True)
 
         for attempt in range(5):
             if blob.exists():
