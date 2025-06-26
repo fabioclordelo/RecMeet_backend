@@ -1,9 +1,9 @@
 from flask import Flask, request, jsonify
 from utils.transcriber import transcribe_audio
 from utils.summarizer import summarize_transcript
-from google.cloud import storage, tasks_v2
+from google.cloud import storage, tasks_v2, firestore
 import firebase_admin
-from firebase_admin import credentials, messaging, firestore
+from firebase_admin import credentials, messaging
 import os
 import json
 import time
@@ -21,6 +21,10 @@ TASK_QUEUE = os.getenv("TASK_QUEUE")
 TASK_LOCATION = os.getenv("TASK_LOCATION")
 PROCESS_URL = os.getenv("PROCESS_URL")
 FIREBASE_CREDENTIAL_JSON = os.getenv("FIREBASE_CREDENTIAL_JSON")
+
+# Initialize GCS and Firestore
+storage_client = storage.Client()
+firestore_client = firestore.Client()
 TOKENS_COLLECTION = "fcm_tokens"
 
 # Initialize Firebase Admin SDK
@@ -34,10 +38,6 @@ if not firebase_admin._apps:
         print("✅ Firebase initialized")
     except Exception as e:
         print("❌ Failed to initialize Firebase Admin SDK:", e)
-
-# ✅ Now safe to use Firestore client
-firestore_client = firestore.client()
-storage_client = storage.Client()
 
 @app.route('/')
 def index():
@@ -239,6 +239,7 @@ def get_meeting(filename):
 
 @app.route('/debug_notify', methods=['POST'])
 def debug_notify():
+    from firebase_admin import messaging
     try:
         data = request.get_json()
         token = data.get("token")
