@@ -1,9 +1,9 @@
 from flask import Flask, request, jsonify
 from utils.transcriber import transcribe_audio
 from utils.summarizer import summarize_transcript
-from google.cloud import storage, tasks_v2, firestore
+from google.cloud import storage, tasks_v2
 import firebase_admin
-from firebase_admin import credentials, messaging
+from firebase_admin import credentials, messaging, firestore
 import os
 import json
 import time
@@ -21,10 +21,6 @@ TASK_QUEUE = os.getenv("TASK_QUEUE")
 TASK_LOCATION = os.getenv("TASK_LOCATION")
 PROCESS_URL = os.getenv("PROCESS_URL")
 FIREBASE_CREDENTIAL_JSON = os.getenv("FIREBASE_CREDENTIAL_JSON")
-
-# Initialize GCS and Firestore
-storage_client = storage.Client()
-firestore_client = firestore.Client()
 TOKENS_COLLECTION = "fcm_tokens"
 
 # Initialize Firebase Admin SDK
@@ -38,6 +34,10 @@ if not firebase_admin._apps:
         print("✅ Firebase initialized")
     except Exception as e:
         print("❌ Failed to initialize Firebase Admin SDK:", e)
+
+# ✅ Now safe to use Firestore client
+firestore_client = firestore.client()
+storage_client = storage.Client()
 
 @app.route('/')
 def index():
@@ -53,7 +53,7 @@ def upload():
         unique_name = f"{uuid.uuid4()}.m4a"
         local_path = os.path.join(UPLOAD_FOLDER, unique_name)
         file.save(local_path)
-        print(f"📥 Received file: {file.filename} → {local_path}", flush=True)
+        print(f"📥 Received file: {file.filename} → {local_path}")
 
         client = tasks_v2.CloudTasksClient()
         parent = client.queue_path(GCP_PROJECT, TASK_LOCATION, TASK_QUEUE)
@@ -73,7 +73,7 @@ def upload():
         }
 
         response = client.create_task(parent=parent, task=task)
-        print(f"🚀 Cloud Task enqueued: {response.name}", flush=True)
+        print(f"🚀 Cloud Task enqueued: {response.name}")
         return jsonify({"status": "processing", "task": response.name}), 202
 
     except Exception as e:
@@ -132,7 +132,7 @@ def process():
         data = request.get_json()
         local_path = data.get("local_path")
         original_filename = data.get("original_filename", "uploaded.m4a")
-        print(f"⚙️ Processing file: {original_filename} at {local_path}", flush=True)
+        print(f"⚙️ Processing file: {original_filename} at {local_path}")
 
         start = time.time()
 
@@ -156,7 +156,7 @@ def process():
             content_type='application/json'
         )
 
-        print(f"✅ Uploaded to GCS: {blob_path}", flush=True)
+        print(f"✅ Uploaded to GCS: {blob_path}")
 
         for attempt in range(5):
             if blob.exists():
@@ -239,7 +239,6 @@ def get_meeting(filename):
 
 @app.route('/debug_notify', methods=['POST'])
 def debug_notify():
-    from firebase_admin import messaging
     try:
         data = request.get_json()
         token = data.get("token")
