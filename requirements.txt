@@ -51,3 +51,5 @@ google-cloud-storage
 google-cloud-tasks
 firebase-admin
 google-cloud-firestore>=2.0.0
+torch==2.3.0+cpu
+torchaudio==2.3.0+cpu
