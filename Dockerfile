@@ -18,8 +18,8 @@ WORKDIR /app
 COPY . .
 
 # Install Python dependencies
-# This step will now install torch and torchaudio from requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# Use --extra-index-url to specify the PyTorch CPU-only package index.
+RUN pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Expose port
 EXPOSE 8080

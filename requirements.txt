@@ -51,5 +51,7 @@ google-cloud-storage
 google-cloud-tasks
 firebase-admin
 google-cloud-firestore>=2.0.0
-torch==2.3.0+cpu
-torchaudio==2.3.0+cpu
+# PyTorch and Torchaudio for audio processing (CPU-only)
+# The +cpu suffix is removed here, as the Dockerfile will specify the PyTorch CPU index.
+torch==2.3.0
+torchaudio==2.3.0
