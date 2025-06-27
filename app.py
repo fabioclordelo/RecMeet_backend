@@ -176,7 +176,6 @@ def process():
         start = time.time()
 
         # Transcribe audio
-        print("📼 Starting chunked transcription...")
         raw_transcript, detected_langs = transcribe_audio(local_path)
         # Summarize transcript
         cleaned_transcript, summary = summarize_transcript(raw_transcript, detected_langs)
