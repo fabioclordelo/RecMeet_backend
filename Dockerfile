@@ -1,10 +1,15 @@
 # Use Python base image
 FROM python:3.11-slim
 
-# Install ffmpeg and dependencies
+# Install minimal ffmpeg dependencies for audio processing
+# Specifically targeting libsndfile1 which is often required by torchaudio
+# and a more streamlined ffmpeg installation.
 RUN apt-get update && \
-    apt-get install -y ffmpeg && \
-    apt-get clean
+    apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libsndfile1 && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
@@ -12,7 +17,8 @@ WORKDIR /app
 # Copy project files
 COPY . .
 
-# Install dependencies
+# Install Python dependencies
+# This step will now install torch and torchaudio from requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Expose port
@@ -20,6 +26,8 @@ EXPOSE 8080
 
 ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
 
+# Pre-bundle the "tiny" model during the build process
+# This ensures the model is available locally when the application runs.
 RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('tiny', local_files_only=False)"
 
 # Run with Gunicorn
