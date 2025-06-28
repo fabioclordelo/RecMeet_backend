@@ -9,10 +9,10 @@ import json
 import time
 from datetime import datetime
 import uuid
-import tempfile  # New import for temporary files
+import tempfile
+from google.cloud.storage import Blob  # Import Blob for signed URLs
 
 app = Flask(__name__)
-# UPLOAD_FOLDER is no longer strictly for *saving* uploads, but for temporary storage during processing
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
@@ -46,54 +46,6 @@ storage_client = storage.Client()
 def index():
     """Root endpoint to confirm backend is running."""
     return "✅ RecMeet backend is running."
-
-
-@app.route('/upload', methods=['POST'])
-def upload():
-    """
-    Handles audio file uploads. Instead of saving locally, it uploads directly to GCS
-    and then enqueues a Cloud Task with the GCS blob name.
-    """
-    try:
-        file = request.files.get('audio')
-        if not file:
-            return jsonify({"error": "Missing 'audio' file in request"}), 400
-
-        # Generate a unique name for the audio file in GCS
-        # Using a timestamp and UUID for uniqueness
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        gcs_blob_name = f"raw_audio/{timestamp}_{uuid.uuid4().hex}.m4a"
-
-        # Upload the received audio file directly to GCS
-        bucket = storage_client.bucket(GCS_BUCKET)
-        blob = bucket.blob(gcs_blob_name)
-        blob.upload_from_file(file)  # Uploads file-like object directly
-        print(f"📥 Uploaded audio to GCS: gs://{GCS_BUCKET}/{gcs_blob_name}")
-
-        client = tasks_v2.CloudTasksClient()
-        parent = client.queue_path(GCP_PROJECT, TASK_LOCATION, TASK_QUEUE)
-
-        payload = {
-            "gcs_blob_name": gcs_blob_name,  # Pass GCS blob name, not local path
-            "original_filename": file.filename
-        }
-
-        task = {
-            "http_request": {
-                "http_method": tasks_v2.HttpMethod.POST,
-                "url": PROCESS_URL,
-                "headers": {"Content-Type": "application/json"},
-                "body": json.dumps(payload).encode()
-            }
-        }
-
-        response = client.create_task(parent=parent, task=task)
-        print(f"🚀 Cloud Task enqueued: {response.name}")
-        return jsonify({"status": "processing", "task": response.name}), 202
-
-    except Exception as e:
-        print(f"❌ Error during /upload: {e}")
-        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/register_token', methods=['POST'])
@@ -162,18 +114,103 @@ def notify_clients(filename):
         print(f"❌ Failed to notify clients (outer loop): {e}", exc_info=True)
 
 
+@app.route('/upload', methods=['POST'])
+def upload():
+    """
+    This endpoint now expects a JSON payload with 'gcs_blob_name' and 'original_filename'
+    after the client has directly uploaded the file to GCS using a signed URL.
+    It then enqueues a Cloud Task for processing.
+    """
+    try:
+        data = request.get_json()
+        gcs_blob_name = data.get("gcs_blob_name")
+        original_filename = data.get("original_filename", "uploaded_file.m4a")
+
+        if not gcs_blob_name:
+            return jsonify({"error": "Missing 'gcs_blob_name' in request payload"}), 400
+
+        print(f"📥 Received notification for GCS blob: gs://{GCS_BUCKET}/{gcs_blob_name}")
+
+        client = tasks_v2.CloudTasksClient()
+        parent = client.queue_path(GCP_PROJECT, TASK_LOCATION, TASK_QUEUE)
+
+        payload = {
+            "gcs_blob_name": gcs_blob_name,
+            "original_filename": original_filename
+        }
+
+        task = {
+            "http_request": {
+                "http_method": tasks_v2.HttpMethod.POST,
+                "url": PROCESS_URL,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps(payload).encode()
+            }
+        }
+
+        response = client.create_task(parent=parent, task=task)
+        print(f"🚀 Cloud Task enqueued for GCS blob: {response.name}")
+        return jsonify({"status": "processing", "task": response.name}), 202
+
+    except Exception as e:
+        print(f"❌ Error during /upload (after GCS direct upload): {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/get_signed_upload_url', methods=['POST'])
+def get_signed_upload_url():
+    """
+    Generates a signed URL for direct client-to-GCS upload.
+    The client should provide the desired filename for the GCS object.
+    """
+    try:
+        data = request.get_json()
+        client_filename = data.get("filename")
+        if not client_filename:
+            return jsonify({"error": "Missing 'filename' in request payload"}), 400
+
+        # Generate a unique blob name for the raw audio in GCS
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        # Ensure the filename is safe for GCS paths (e.g., replace spaces)
+        safe_client_filename = client_filename.replace(" ", "_")
+        gcs_blob_name = f"raw_audio/{timestamp}_{uuid.uuid4().hex}_{safe_client_filename}"
+
+        bucket = storage_client.bucket(GCS_BUCKET)
+        blob = bucket.blob(gcs_blob_name)
+
+        # Generate the signed URL for uploading
+        # The URL will be valid for 15 minutes (900 seconds)
+        signed_url = blob.generate_signed_url(
+            version="v4",
+            expiration=datetime.now() + timedelta(minutes=15),  # URL valid for 15 minutes
+            method="PUT",  # Method for uploading a file
+            content_type="audio/m4a"  # Specify content type for the upload
+        )
+
+        print(f"✅ Generated signed URL for GCS blob: {gcs_blob_name}")
+        return jsonify({
+            "signed_url": signed_url,
+            "gcs_blob_name": gcs_blob_name,
+            "original_filename": client_filename  # Return original filename for context
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error generating signed URL: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/process', methods=['POST'])
 def process():
     """
     Processes an audio file: downloads from GCS, transcribes, summarizes,
     uploads results to GCS, and notifies clients via FCM.
     """
-    gcs_blob_name = None  # Initialize to None for error handling
-    local_audio_path = None  # Initialize to None for cleanup
+    gcs_blob_name = None
+    local_audio_path = None
 
     try:
         data = request.get_json()
-        gcs_blob_name = data.get("gcs_blob_name")  # Get GCS blob name from payload
+        gcs_blob_name = data.get("gcs_blob_name")
         original_filename = data.get("original_filename", "uploaded.m4a")
 
         if not gcs_blob_name:
@@ -187,7 +224,6 @@ def process():
         bucket = storage_client.bucket(GCS_BUCKET)
         blob = bucket.blob(gcs_blob_name)
 
-        # Create a temporary file to save the downloaded audio
         with tempfile.NamedTemporaryFile(delete=False, suffix=".m4a") as temp_file:
             local_audio_path = temp_file.name
             blob.download_to_filename(local_audio_path)
@@ -217,7 +253,6 @@ def process():
 
         print(f"✅ Uploaded result to GCS: {blob_path}")
 
-        # Optional: Verify blob exists (can sometimes be eventually consistent)
         for attempt in range(5):
             if result_blob.exists():
                 print("🟢 Verified result blob exists in GCS.")
@@ -237,10 +272,9 @@ def process():
         return jsonify({"status": "done", "filename": json_filename}), 200
 
     except Exception as e:
-        print(f"❌ Error during /process: {e}", exc_info=True)  # Print full traceback
+        print(f"❌ Error during /process: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
     finally:
-        # Clean up the temporary local audio file
         if local_audio_path and os.path.exists(local_audio_path):
             try:
                 os.unlink(local_audio_path)
@@ -256,7 +290,6 @@ def list_meetings():
     """
     try:
         bucket = storage_client.bucket(GCS_BUCKET)
-        # List blobs in the 'meetings/' prefix
         blobs = bucket.list_blobs(prefix="meetings/")
         meetings = []
 
@@ -394,4 +427,6 @@ def test_manual_notify():
 
 
 if __name__ == '__main__':
+    # For local development, you might want to run the app directly
+    # app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
     pass
