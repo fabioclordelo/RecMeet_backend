@@ -14,7 +14,7 @@ except Exception as e:
     model = None  # Fallback to prevent crashing at import time
 
 
-def transcribe_audio(path, chunk_length=60):
+def transcribe_audio(path, chunk_length=240):
     """
     Transcribes audio from a given path in chunks to manage memory usage.
 
