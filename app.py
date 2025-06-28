@@ -9,8 +9,10 @@ import json
 import time
 from datetime import datetime
 import uuid
+import tempfile  # New import for temporary files
 
 app = Flask(__name__)
+# UPLOAD_FOLDER is no longer strictly for *saving* uploads, but for temporary storage during processing
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
@@ -29,7 +31,6 @@ if not firebase_admin._apps:
         if os.path.isfile(FIREBASE_CREDENTIAL_JSON):
             cred = credentials.Certificate(FIREBASE_CREDENTIAL_JSON)
         else:
-            # If FIREBASE_CREDENTIAL_JSON is a JSON string, parse it
             cred = credentials.Certificate(json.loads(FIREBASE_CREDENTIAL_JSON))
         firebase_admin.initialize_app(cred)
         print("✅ Firebase initialized")
@@ -40,49 +41,52 @@ if not firebase_admin._apps:
 firestore_client = firestore.client()
 storage_client = storage.Client()
 
+
 @app.route('/')
 def index():
     """Root endpoint to confirm backend is running."""
     return "✅ RecMeet backend is running."
 
+
 @app.route('/upload', methods=['POST'])
 def upload():
     """
-    Handles audio file uploads, saves them locally, and enqueues a Cloud Task
-    for asynchronous processing.
+    Handles audio file uploads. Instead of saving locally, it uploads directly to GCS
+    and then enqueues a Cloud Task with the GCS blob name.
     """
     try:
         file = request.files.get('audio')
         if not file:
             return jsonify({"error": "Missing 'audio' file in request"}), 400
 
-        # Generate a unique name for the audio file
-        unique_name = f"{uuid.uuid4()}.m4a"
-        local_path = os.path.join(UPLOAD_FOLDER, unique_name)
-        file.save(local_path)
-        print(f"📥 Received file: {file.filename} → {local_path}")
+        # Generate a unique name for the audio file in GCS
+        # Using a timestamp and UUID for uniqueness
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        gcs_blob_name = f"raw_audio/{timestamp}_{uuid.uuid4().hex}.m4a"
 
-        # Initialize Cloud Tasks client
+        # Upload the received audio file directly to GCS
+        bucket = storage_client.bucket(GCS_BUCKET)
+        blob = bucket.blob(gcs_blob_name)
+        blob.upload_from_file(file)  # Uploads file-like object directly
+        print(f"📥 Uploaded audio to GCS: gs://{GCS_BUCKET}/{gcs_blob_name}")
+
         client = tasks_v2.CloudTasksClient()
         parent = client.queue_path(GCP_PROJECT, TASK_LOCATION, TASK_QUEUE)
 
-        # Prepare payload for the Cloud Task
         payload = {
-            "local_path": local_path,
+            "gcs_blob_name": gcs_blob_name,  # Pass GCS blob name, not local path
             "original_filename": file.filename
         }
 
-        # Create the Cloud Task
         task = {
             "http_request": {
                 "http_method": tasks_v2.HttpMethod.POST,
                 "url": PROCESS_URL,
                 "headers": {"Content-Type": "application/json"},
-                "body": json.dumps(payload).encode() # Encode payload to bytes
+                "body": json.dumps(payload).encode()
             }
         }
 
-        # Enqueue the task
         response = client.create_task(parent=parent, task=task)
         print(f"🚀 Cloud Task enqueued: {response.name}")
         return jsonify({"status": "processing", "task": response.name}), 202
@@ -90,6 +94,7 @@ def upload():
     except Exception as e:
         print(f"❌ Error during /upload: {e}")
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/register_token', methods=['POST'])
 def register_token():
@@ -103,7 +108,6 @@ def register_token():
         if not token:
             return jsonify({"error": "No token provided"}), 400
 
-        # Store the token as a document ID in the 'fcm_tokens' collection
         doc_ref = firestore_client.collection(TOKENS_COLLECTION).document(token)
         doc_ref.set({"timestamp": firestore.SERVER_TIMESTAMP})
         print(f"✅ Registered FCM token in Firestore: {token}")
@@ -113,6 +117,7 @@ def register_token():
     except Exception as e:
         print(f"❌ Error registering FCM token: {e}")
         return jsonify({"error": str(e)}), 500
+
 
 def notify_clients(filename):
     """
@@ -130,54 +135,66 @@ def notify_clients(filename):
 
         for token in tokens:
             try:
-                # Construct the FCM message
                 message = messaging.Message(
                     notification=messaging.Notification(
                         title="RecMeet Update",
                         body=f"Your transcript is ready! {uuid.uuid4().hex[:6]}"
                     ),
-                    data={"filename": filename}, # Custom data payload
+                    data={"filename": filename},
                     token=token,
-                    # IMPORTANT: Add this for background delivery of data payload on Apple platforms
                     apns=messaging.APNSConfig(
-                        headers={"apns-priority": "10"}, # High priority for immediate delivery
+                        headers={"apns-priority": "10"},
                         payload=messaging.APNSPayload(
-                            aps=messaging.Aps(content_available=True) # Essential for background data delivery
+                            aps=messaging.Aps(content_available=True)
                         )
                     )
                 )
                 print(f"Attempting to send FCM to token: {token} for filename: {filename}")
                 response = messaging.send(message)
-                print(f"🔔 FCM sent successfully to {token}. Response: {response}") # Log the full response from FCM
+                print(f"🔔 FCM sent successfully to {token}. Response: {response}")
             except messaging.UnregisteredError:
-                # This token is no longer valid, remove it from Firestore
                 print(f"❌ FCM token {token} is unregistered or invalid. Removing from Firestore.")
                 firestore_client.collection(TOKENS_COLLECTION).document(token).delete()
             except Exception as e:
-                # Log any other errors during sending with full traceback
                 print(f"❌ Failed to send FCM to {token}. Error: {e}", exc_info=True)
 
     except Exception as e:
-        # Log errors in the outer loop (e.g., Firestore stream issues)
         print(f"❌ Failed to notify clients (outer loop): {e}", exc_info=True)
+
 
 @app.route('/process', methods=['POST'])
 def process():
     """
-    Processes an audio file: transcribes, summarizes, and uploads to GCS.
-    Then, notifies clients via FCM.
+    Processes an audio file: downloads from GCS, transcribes, summarizes,
+    uploads results to GCS, and notifies clients via FCM.
     """
+    gcs_blob_name = None  # Initialize to None for error handling
+    local_audio_path = None  # Initialize to None for cleanup
+
     try:
         data = request.get_json()
-        local_path = data.get("local_path")
+        gcs_blob_name = data.get("gcs_blob_name")  # Get GCS blob name from payload
         original_filename = data.get("original_filename", "uploaded.m4a")
-        print(f"⚙️ Processing file: {original_filename} at {local_path}")
+
+        if not gcs_blob_name:
+            return jsonify({"error": "Missing 'gcs_blob_name' in request payload"}), 400
+
+        print(f"⚙️ Processing GCS blob: gs://{GCS_BUCKET}/{gcs_blob_name}")
 
         start = time.time()
 
-        # Transcribe audio
-        raw_transcript, detected_langs = transcribe_audio(local_path)
-        # Summarize transcript
+        # Download audio from GCS to a temporary local file
+        bucket = storage_client.bucket(GCS_BUCKET)
+        blob = bucket.blob(gcs_blob_name)
+
+        # Create a temporary file to save the downloaded audio
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".m4a") as temp_file:
+            local_audio_path = temp_file.name
+            blob.download_to_filename(local_audio_path)
+        print(f"⬇️ Downloaded audio from GCS to local path: {local_audio_path}")
+
+        # Transcribe and summarize
+        raw_transcript, detected_langs = transcribe_audio(local_audio_path)
         cleaned_transcript, summary = summarize_transcript(raw_transcript, detected_langs)
 
         result = {
@@ -186,43 +203,51 @@ def process():
             "summary": summary
         }
 
-        # Generate a unique filename for the JSON output
+        # Generate a unique filename for the JSON output in GCS
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         json_filename = f"meeting_{timestamp}.json"
         blob_path = f"meetings/{json_filename}"
 
         # Upload the JSON result to Google Cloud Storage
-        bucket = storage_client.bucket(GCS_BUCKET)
-        blob = bucket.blob(blob_path)
-        blob.upload_from_string(
+        result_blob = bucket.blob(blob_path)
+        result_blob.upload_from_string(
             data=json.dumps(result, indent=2, ensure_ascii=False),
             content_type='application/json'
         )
 
-        print(f"✅ Uploaded to GCS: {blob_path}")
+        print(f"✅ Uploaded result to GCS: {blob_path}")
 
         # Optional: Verify blob exists (can sometimes be eventually consistent)
         for attempt in range(5):
-            if blob.exists():
-                print("🟢 Verified blob exists in GCS.")
+            if result_blob.exists():
+                print("🟢 Verified result blob exists in GCS.")
                 break
-            print(f"⏳ Attempt {attempt+1}/5: Waiting for blob to be available...")
+            print(f"⏳ Attempt {attempt + 1}/5: Waiting for result blob to be available...")
             time.sleep(0.5)
         else:
-            print("⚠️ Blob not confirmed in time — continuing anyway.")
+            print("⚠️ Result blob not confirmed in time — continuing anyway.")
 
         # Notify clients that processing is complete
-        print("Attempting to notify clients...") # Added log
+        print("Attempting to notify clients...")
         notify_clients(json_filename)
-        print("Client notification attempt completed.") # Added log
+        print("Client notification attempt completed.")
 
         print(f"✅ Task processed in {time.time() - start:.2f} seconds")
 
         return jsonify({"status": "done", "filename": json_filename}), 200
 
     except Exception as e:
-        print(f"❌ Error during /process: {e}")
+        print(f"❌ Error during /process: {e}", exc_info=True)  # Print full traceback
         return jsonify({"error": str(e)}), 500
+    finally:
+        # Clean up the temporary local audio file
+        if local_audio_path and os.path.exists(local_audio_path):
+            try:
+                os.unlink(local_audio_path)
+                print(f"🗑️ Cleaned up temporary file: {local_audio_path}")
+            except Exception as e:
+                print(f"⚠️ Failed to delete temporary file {local_audio_path}: {e}")
+
 
 @app.route('/list', methods=['GET'])
 def list_meetings():
@@ -231,6 +256,7 @@ def list_meetings():
     """
     try:
         bucket = storage_client.bucket(GCS_BUCKET)
+        # List blobs in the 'meetings/' prefix
         blobs = bucket.list_blobs(prefix="meetings/")
         meetings = []
 
@@ -256,13 +282,13 @@ def list_meetings():
                     except Exception as e:
                         print(f"⚠️ Could not parse timestamp in {filename}: {e}")
 
-        # Sort meetings by date/time (most recent first)
         meetings.sort(key=lambda x: x["displayName"], reverse=True)
         return jsonify(meetings)
 
     except Exception as e:
         print(f"❌ Error during listing: {e}")
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/status/<filename>', methods=['GET'])
 def get_meeting(filename):
@@ -293,6 +319,7 @@ def get_meeting(filename):
         print(f"❌ Error getting meeting {filename}: {e}")
         return jsonify({"error": str(e)}), 500
 
+
 @app.route('/debug_notify', methods=['POST'])
 def debug_notify():
     """
@@ -312,9 +339,8 @@ def debug_notify():
             ),
             data={"filename": "debug.json"},
             token=token,
-            # IMPORTANT: Add this for background delivery of data payload
             apns=messaging.APNSConfig(
-                headers={"apns-priority": "10"}, # High priority for immediate delivery
+                headers={"apns-priority": "10"},
                 payload=messaging.APNSPayload(
                     aps=messaging.Aps(content_available=True)
                 )
@@ -322,11 +348,12 @@ def debug_notify():
         )
         response = messaging.send(message)
         print(f"🔔 Debug notification sent to {token}: {response}")
-        return jsonify({"status": "sent", "response": str(response)}), 200 # Convert response to string
+        return jsonify({"status": "sent", "response": str(response)}), 200
 
     except Exception as e:
         print(f"❌ Error sending debug FCM: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/test_manual_notify', methods=['POST'])
 def test_manual_notify():
@@ -359,14 +386,12 @@ def test_manual_notify():
         print(f"Attempting to send manual FCM to token: {token} for filename: {test_filename}")
         response = messaging.send(message)
         print(f"🔔 Manual debug notification sent to {token}. Response: {response}")
-        return jsonify({"status": "sent", "response": str(response)}), 200 # Convert response to string for JSON
+        return jsonify({"status": "sent", "response": str(response)}), 200
 
     except Exception as e:
         print(f"❌ Error sending manual debug FCM: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
+
 if __name__ == '__main__':
-    # This block is typically used for local development.
-    # For production deployments (e.g., Gunicorn, Cloud Run), this block is often not executed directly.
-    # You might want to add app.run(debug=True) here for local testing.
     pass
