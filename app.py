@@ -7,7 +7,7 @@ from firebase_admin import credentials, messaging, firestore
 import os
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta  # Added timedelta import
 import uuid
 import tempfile
 from google.cloud.storage import Blob  # Import Blob for signed URLs
@@ -195,7 +195,8 @@ def get_signed_upload_url():
         }), 200
 
     except Exception as e:
-        print(f"❌ Error generating signed URL: {e}", exc_info=True)
+        # Removed exc_info=True as it's not valid for print()
+        print(f"❌ Error generating signed URL: {e}")
         return jsonify({"error": str(e)}), 500
 
 
