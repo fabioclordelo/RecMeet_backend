@@ -33,7 +33,7 @@ def get_audio_duration(file_path):
         raise RuntimeError(f"Failed to get audio duration: {e}")
 
 
-def transcribe_audio(full_audio_path, chunk_length_seconds=30):
+def transcribe_audio(full_audio_path, chunk_length_seconds=240):
     """
     Transcribes audio from a given path in chunks using ffmpeg to extract segments.
     This avoids loading the entire audio file into Python memory at once.
