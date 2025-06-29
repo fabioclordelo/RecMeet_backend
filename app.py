@@ -7,10 +7,14 @@ from firebase_admin import credentials, messaging, firestore
 import os
 import json
 import time
-from datetime import datetime, timedelta  # Added timedelta import
+from datetime import datetime, timedelta
 import uuid
 import tempfile
-from google.cloud.storage import Blob  # Import Blob for signed URLs
+from google.cloud.storage import Blob
+
+# New imports for explicit credential handling
+import google.auth
+import google.auth.transport.requests
 
 app = Flask(__name__)
 UPLOAD_FOLDER = "uploads"
@@ -178,13 +182,21 @@ def get_signed_upload_url():
         bucket = storage_client.bucket(GCS_BUCKET)
         blob = bucket.blob(gcs_blob_name)
 
+        # Explicitly get credentials and service account email for signing
+        # This is the key change to address the "private key to sign credentials" error
+        credentials, project = google.auth.default()
+        request_transport = google.auth.transport.requests.Request()
+        credentials.refresh(request_transport)  # Ensure credentials are fresh and contain access token
+
         # Generate the signed URL for uploading
         # The URL will be valid for 15 minutes (900 seconds)
         signed_url = blob.generate_signed_url(
             version="v4",
             expiration=datetime.now() + timedelta(minutes=15),  # URL valid for 15 minutes
             method="PUT",  # Method for uploading a file
-            content_type="audio/m4a"  # Specify content type for the upload
+            content_type="audio/m4a",  # Specify content type for the upload
+            service_account_email=credentials.service_account_email,  # Explicitly pass SA email
+            access_token=credentials.token  # Explicitly pass access token
         )
 
         print(f"✅ Generated signed URL for GCS blob: {gcs_blob_name}")
@@ -195,7 +207,6 @@ def get_signed_upload_url():
         }), 200
 
     except Exception as e:
-        # Removed exc_info=True as it's not valid for print()
         print(f"❌ Error generating signed URL: {e}")
         return jsonify({"error": str(e)}), 500
 
@@ -428,6 +439,4 @@ def test_manual_notify():
 
 
 if __name__ == '__main__':
-    # For local development, you might want to run the app directly
-    # app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
     pass
